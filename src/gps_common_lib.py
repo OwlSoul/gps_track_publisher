@@ -1,56 +1,16 @@
-#!/usr/bin/env python2
-
 """
-This node will publish GPS data from a pre-recorded track in kml or gpx format to specified ROS node(s).
-
-Current limitations:
-  Known to work with kml from the following sources:
-     - GeoTracker android app - provides tracks with gx extensions, simply perfect.
-     - Tracks from bikemap.net
-
+Common library for various GPS functions of 'gps_track_publisher' node.
 """
 
 from __future__ import print_function
-from sensor_msgs.msg import NavSatFix
-from sensor_msgs.msg import NavSatStatus
-import fastkml.gx
-from fastkml import kml
-from pykml import parser
 import datetime
-import rospy
-import sys
-from os import path
 import dateutil.parser
 import lxml.etree as et
 
-class ROSNode:
+
+class GPSFunctions:
     def __init__(self):
-        self.track_file = 'sample_tracks/track-01.kml'
-
-        # Name of the node
-        self.node_name = 'gps_track_publisher'
-
-        #TODO: Topic to publish the gps data
-        self.track_pub = None
-        self.track_topic_name = '/gps_track'
-        self.queue_size = 10
-
-        #TODO: Speed multiplier, default is 1.0
-        self.speed_multiplier = 1.0
-
-        #TODO: If True, the node will terminate itself when finished.
-        self.exit_when_finished = True
-
-        #TODO: Approximate with linear approximation or not. If yes the node will send GPS coordinates from linear
-        # approximation between two points if there's a gap between them in the initial data larget than
-        # approximate_period
-        self.approximate = False
-        self.approximate_period = 0.5
-        #TODO: Override track duration, this is very useful for tracks without timestamps.
-        # Publisher will linearly approximate track to match it with this duration.
-        # The limitation is that the speed will be constant during the whole track.
-        # If set to 0 the whole track will be published immediately.
-        self.override_duration = 3600
+        pass
 
     @staticmethod
     def timestamp(data):
@@ -59,9 +19,46 @@ class ROSNode:
         :param data: timestamp in ISO format
         :return: Unix timestamp
         """
-        return (data - datetime.datetime(1970,1,1)).total_seconds()
+        return (data - datetime.datetime(1970, 1, 1)).total_seconds()
 
-    def parse_kml(self, filename):
+    @staticmethod
+    def parse_line_string(placemark, nsmap={}):
+        """
+        Parsing the LineString element, this usually comes without time data whatsoever
+        :param placemark: Placemark element
+        :param nsmap: namespace map
+        :return: array of coordinates (lat, lon, alt): [[float, float, float], [float, float, float], ...]
+        """
+        try:
+            linestrings = placemark.xpath("kml:LineString", namespaces=nsmap)
+            for linestring_no, linestring in enumerate(linestrings):
+                linestring_result = []
+                print("Linestring " + str(linestring_no) + ":")
+                coords = linestring.xpath("kml:coordinates", namespaces=nsmap)
+                for coord in coords:
+                    value = str(coord.xpath("text()", namespaces=nsmap)) \
+                        .replace('[', ' ') \
+                        .replace(']', ' ') \
+                        .replace("'", ' ') \
+                        .replace('n', ' ') \
+                        .split('\\')
+                    print("  Contains " + str(len(value)) + " coordinates")
+                    for entry in value:
+                        try:
+                            coord_values = list(map(float, iter(entry.split(','))))
+                            linestring_result.append({'coord': coord_values,
+                                                      'timestamp': 0.0})
+                        except:
+                            pass
+
+                    return linestring_result
+
+        except Exception as e:
+            print("LineString: " + str(e))
+            return []
+
+    @staticmethod
+    def parse_kml(filename):
         """
         Parses a KML file
         :param filename: name of the file
@@ -78,7 +75,7 @@ class ROSNode:
         nsmap = root.nsmap
 
         if None in nsmap:
-            rospy.loginfo("Setting default NSMAP to 'kml'")
+            print("Setting default NSMAP to 'kml'")
             nsmap['kml'] = nsmap[None]
             del nsmap[None]
 
@@ -109,49 +106,26 @@ class ROSNode:
             begin = None
             end = None
 
+            print("  Begin: ", end="")
             try:
                 begin = placemark.xpath("kml:TimeSpan/kml:begin/text()", namespaces=nsmap)[0]
-                begin_timestamp = self.timestamp(dateutil.parser.parse(str(begin)).replace(tzinfo=None))
-                print("  Begin: ", end="")
+                begin_timestamp = GPSFunctions.timestamp(dateutil.parser.parse(str(begin)).replace(tzinfo=None))
                 print(str(begin) + " / " + str(begin_timestamp))
             except:
                 print(" - ")
 
+            print("  End  : ", end="")
             try:
                 end = placemark.xpath("kml:TimeSpan/kml:end/text()", namespaces=nsmap)[0]
-                end_timestamp = self.timestamp(dateutil.parser.parse(str(end)).replace(tzinfo=None))
-                print("  End  : ", end="")
+                end_timestamp = GPSFunctions.timestamp(dateutil.parser.parse(str(end)).replace(tzinfo=None))
                 print(str(end) + " / " + str(end_timestamp))
             except:
                 print(" - ")
             print("")
 
             # Parsing the LineString thingy here, this usually comes without timedata
-            try:
-                linestrings = placemark.xpath("kml:LineString", namespaces=nsmap)
-                for linestring_no, linestring in enumerate(linestrings):
-                    linestring_result = []
-                    print("Linestring " + str(linestring_no) + ":")
-                    coords = linestring.xpath("kml:coordinates", namespaces=nsmap)
-                    for coord in coords:
-                        value = str(coord.xpath("text()", namespaces=nsmap)) \
-                            .replace('[', ' ') \
-                            .replace(']', ' ') \
-                            .replace("'", ' ') \
-                            .replace('n', ' ') \
-                            .split('\\')
-                        for entry in value:
-                            try:
-                                coord_values = list(map(float, iter(entry.split(','))))
-                                linestring_result.append({'coord': coord_values,
-                                                          'timestamp': 0.0 })
-                            except:
-                                pass
-
-                        result.append(linestring_result)
-
-            except Exception as e:
-                print("LineString: " + str(e))
+            linestring_result = GPSFunctions.parse_line_string(placemark, nsmap)
+            result.append(linestring_result)
 
             # Parsing the Multitrack thingy next
             try:
@@ -183,7 +157,7 @@ class ROSNode:
                             whens = track.xpath("kml:when", namespaces=nsmap)
                             for when in whens:
                                 whentime = when.xpath("text()")[0]
-                                when_ts = self.timestamp(dateutil.parser.parse(str(whentime)).replace(tzinfo=None))
+                                when_ts = GPSFunctions.timestamp(dateutil.parser.parse(str(whentime)).replace(tzinfo=None))
                                 res_timestamps.append(when_ts)
                         except:
                             pass
@@ -256,31 +230,13 @@ class ROSNode:
                 print("gx:MultiTrack: " + str(e))
 
             # This also should be sorted already, but ANYWAY.
-            placemark_result = sorted(placemark_result, key=lambda x: x['timestamp'])
+            try:
+                placemark_result = sorted(placemark_result, key=lambda x: x['timestamp'])
+            except Exception as e:
+                print("Failed to sort gx:MultiTrack based on timestamps, are they even there?")
 
             if placemark_result:
                 result.append(placemark_result)
 
             return result
 
-
-
-    def run(self):
-        rospy.init_node(self.node_name)
-
-        self.track_pub = rospy.Publisher(self.track_topic_name, NavSatFix, queue_size=self.queue_size)
-
-        data = self.parse_kml(self.track_file)
-
-        print()
-        print("The result:")
-        for i, entry in enumerate(data):
-            print("Entry " + str(i))
-            for x in entry:
-                pass
-                print(" ", x)
-
-if __name__=='__main__':
-    node = ROSNode()
-    node.run()
-    sys.exit(0)
